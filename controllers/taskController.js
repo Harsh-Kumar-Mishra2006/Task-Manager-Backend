@@ -1,7 +1,7 @@
 //controllers/taskController.js
 const Task = require('../models/Task');
 
-exports.createTask = async (req, res, next) => {
+const createTask = async (req, res, next) => {
   try {
     console.log('Creating task with data:', req.body);
     
@@ -37,7 +37,7 @@ exports.createTask = async (req, res, next) => {
 };
 
 
-exports.getAllTasks = async (req, res, next) => {
+const getAllTasks = async (req, res, next) => {
   try {
     console.log('Fetching tasks with params:', req.query);
     
@@ -94,7 +94,7 @@ exports.getAllTasks = async (req, res, next) => {
   }
 };
 
-exports.getTaskById = async (req, res, next) => {
+const getTaskById = async (req, res, next) => {
   try {
     const task = await Task.findById(req.params.id);
     
@@ -121,7 +121,7 @@ exports.getTaskById = async (req, res, next) => {
   }
 };
 
-exports.updateTask = async (req, res, next) => {
+const updateTask = async (req, res, next) => {
   try {
     console.log('Updating task:', req.params.id);
     console.log('Update data:', req.body);
@@ -232,7 +232,7 @@ exports.updateTask = async (req, res, next) => {
   }
 };
 
-exports.deleteTask = async (req, res, next) => {
+const deleteTask = async (req, res, next) => {
   try {
     console.log('Deleting task:', req.params.id);
 
@@ -282,7 +282,7 @@ exports.deleteTask = async (req, res, next) => {
   }
 };
 
-exports.getTaskStats = async (req, res, next) => {
+const getTaskStats = async (req, res, next) => {
   try {
     const totalTasks = await Task.countDocuments();
     const statusStats = await Task.aggregate([
@@ -327,7 +327,7 @@ exports.getTaskStats = async (req, res, next) => {
   }
 };
 
-exports.bulkDeleteTasks = async (req, res, next) => {
+const bulkDeleteTasks = async (req, res, next) => {
   try {
     console.log('Bulk deleting tasks:', req.body);
     
@@ -369,3 +369,5 @@ exports.bulkDeleteTasks = async (req, res, next) => {
     });
   }
 };
+
+module.exports= {createTask,getAllTasks,getTaskById, getTaskStats,bulkDeleteTasks, updateTask, deleteTask};

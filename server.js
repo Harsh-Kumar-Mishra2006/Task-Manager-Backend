@@ -19,21 +19,22 @@ const allowedOrigins = [
   'https://colledge-connect-assignment-frontend.onrender.com'
 ].filter(Boolean);
 
-app.use(cors({
+const corsOptions = {
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
-    
+
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
-    } else {
+    }
+    else {
       callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
+};
+app.use(cors(corsOptions));
 
 app.use(helmet());
 
@@ -55,7 +56,14 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Routes
 app.use('/api/tasks', taskRoutes);
 
-// Health check endpoin
+app.get('/', (req, res) => {
+  res.status(200).json({
+    status: 'success',
+    message: 'Welcome to the Task Manager API'
+  });
+});
+
+// Health check endpoint
 app.get('/api/health', (req, res) => {
   res.status(200).json({
     status: 'success',

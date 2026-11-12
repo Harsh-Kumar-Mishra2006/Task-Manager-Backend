@@ -1,21 +1,24 @@
-// server.js
+// server.js 
 require('dotenv').config();
+const http = require('http');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const { Server } = require('socket.io');
+
 const connectDB = require('./config/database');
 const taskRoutes = require('./routes/taskRoutes');
 const authRoutes = require('./routes/authRoutes');
-const errorHandler = require('./middlewares/errorHandler');   // <-- plural to match
+const documentRoutes = require('./routes/documentRoutes');
+const errorHandler = require('./middlewares/errorHandler');
+const { registerDocumentSocket } = require('./sockets/documentSocket');
 
 const app = express();
-
-// REQUIRED behind Render / reverse proxy for rate-limit + secure cookies
 app.set('trust proxy', 1);
-
 connectDB();
 
+// ---- CORS (shared between express + socket.io) ----
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173',
@@ -23,52 +26,51 @@ const allowedOrigins = [
 ].filter(Boolean);
 
 const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) !== -1) return callback(null, true);
-    return callback(new Error('Not allowed by CORS'));
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    return allowedOrigins.includes(origin) ? cb(null, true) : cb(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 };
-app.use(cors(corsOptions));
 
+app.use(cors(corsOptions));
 app.use(helmet());
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
   standardHeaders: true,
-  legacyHeaders: false,
-  message: { status: 'error', message: 'Too many requests, please try again later.' }
+  legacyHeaders: false
 }));
-
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-app.use('/api/tasks', taskRoutes);
+// ---- REST routes ----
 app.use('/api/auth', authRoutes);
-
-app.get('/', (req, res) =>
-  res.status(200).json({ status: 'success', message: 'Welcome to the Task Manager API' })
-);
+app.use('/api/tasks', taskRoutes);
+app.use('/api/docs', documentRoutes);
 
 app.get('/api/health', (req, res) =>
-  res.status(200).json({
-    status: 'success',
-    message: 'Server is running',
-    timestamp: new Date().toISOString()
-  })
+  res.json({ status: 'success', timestamp: new Date().toISOString() })
 );
 
-app.use((req, res) => {
-  res.status(404).json({ status: 'error', message: 'Route not found' });
-});
-
+app.use((req, res) => res.status(404).json({ status: 'error', message: 'Route not found' }));
 app.use(errorHandler);
 
+// ---- Create HTTP server + attach Socket.IO ----
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, {
+  cors: corsOptions,
+  // large text = large payload; 1MB is plenty for a writing board
+  maxHttpBufferSize: 1e6
+});
+
+registerDocumentSocket(io);
+
+// ---- Start ----
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV}`);
 });

@@ -370,4 +370,4 @@ const bulkDeleteTasks = async (req, res, next) => {
   }
 };
 
-module.exports= {createTask,getAllTasks,getTaskById, getTaskStats,bulkDeleteTasks, updateTask, deleteTask};
+module.exports= {createTask, getAllTasks, getTaskById, getTaskStats, bulkDeleteTasks, updateTask, deleteTask};

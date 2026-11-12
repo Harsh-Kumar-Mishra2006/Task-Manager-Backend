@@ -1,55 +1,87 @@
+// controllers/authController.js
 const auth = require('../models/authModel');
-const Worker = require('../models/addWorker');
 const jwt = require('jsonwebtoken');
 const bcryptjs = require('bcryptjs');
 
-// Signup
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '30d';
+const COOKIE_MAX_AGE = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+// ---------- Helper: sign token ----------
+const signToken = (user) =>
+  jwt.sign(
+    {
+      userId: user._id,
+      email: user.email,
+      role: user.role,
+      name: user.name
+    },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES_IN }
+  );
+
+// ---------- Helper: set cookie ----------
+const setTokenCookie = (res, token) => {
+  res.cookie('token', token, {
+    maxAge: COOKIE_MAX_AGE,
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+  });
+};
+
+// ---------- SIGNUP ----------
 const signup = async (req, res) => {
-  let { name, email, username, phone, password, role = 'user', profile = {}, age, gender, dob } = req.body;
+  const { name, email, username, phone, password, role = 'user', profile = {}, age, gender, dob } = req.body;
 
-  console.log('Signup request received:', { name, email, phone, role });
+  console.log('Signup request received:', { name, email, role });
 
+  // --- validation ---
   if (!email || !email.trim()) {
-    return res.status(400).json({ 
-      success: false,
-      error: 'Email is required for user/admin registration' 
-    });
+    return res.status(400).json({ success: false, error: 'Email is required' });
   }
-
   if (!name || !password) {
-    return res.status(400).json({ 
-      success: false,
-      error: 'Name and password are required' 
-    });
+    return res.status(400).json({ success: false, error: 'Name and password are required' });
   }
-
+  if (password.length < 6) {
+    return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
+  }
   const emailRegex = /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/;
   if (!emailRegex.test(email)) {
-    return res.status(400).json({
-      success: false,
-      error: 'Please enter a valid email address'
-    });
+    return res.status(400).json({ success: false, error: 'Please enter a valid email address' });
+  }
+  if (!['user', 'worker', 'admin'].includes(role)) {
+    return res.status(400).json({ success: false, error: 'Invalid role' });
   }
 
   try {
-    const existingEmail = await auth.findOne({ email: email.trim() });
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const existingEmail = await auth.findOne({ email: normalizedEmail });
     if (existingEmail) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Email already registered' 
-      });
+      return res.status(400).json({ success: false, message: 'Email already registered' });
     }
 
-    // Hash password
+    // username check (only if provided and non-empty)
+    let normalizedUsername = null;
+    if (username && username.trim() !== '') {
+      normalizedUsername = username.trim().toLowerCase();
+      const existingUsername = await auth.findOne({ username: normalizedUsername });
+      if (existingUsername) {
+        return res.status(400).json({ success: false, message: 'Username already taken' });
+      }
+    }
+
     const salt = await bcryptjs.genSalt(10);
     const hash = await bcryptjs.hash(password, salt);
-    
-    // Prepare user data
+
     const userData = {
-      name,
-      email: email.trim(),
+      name: name.trim(),
+      email: normalizedEmail,
       password: hash,
-      role: role,
+      role,
+      username: normalizedUsername,
+      phone: phone && phone.trim() ? phone.trim() : null,
       profile: {
         age: age || '',
         gender: gender || '',
@@ -60,28 +92,11 @@ const signup = async (req, res) => {
       isActive: true
     };
 
-    if (phone) {
-      userData.phone = phone;
-    }
-
-    // Add username if provided
-    if (username && username.trim() !== '') {
-      // Check username uniqueness
-      const existingUsername = await auth.findOne({ username: username.trim() });
-      if (existingUsername) {
-        return res.status(400).json({ 
-          success: false,
-          message: 'Username already taken' 
-        });
-      }
-      userData.username = username.trim();
-    }
-
     const createuser = await auth.create(userData);
 
-    console.log(`${role} created successfully with email: ${email}`);
+    console.log(`${role} created successfully with email: ${normalizedEmail}`);
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       data: {
         id: createuser._id,
@@ -94,187 +109,135 @@ const signup = async (req, res) => {
       },
       message: `${role} account created successfully`
     });
-
   } catch (err) {
-    console.log("Error occurred: ", err);
-    res.status(400).json({
-      success: false,
-      error: "Failed to create profile: " + err.message
-    });
+    console.log('Signup error:', err);
+    if (err.code === 11000) {
+      const field = Object.keys(err.keyPattern || {})[0] || 'field';
+      return res.status(400).json({ success: false, error: `${field} already in use` });
+    }
+    if (err.name === 'ValidationError') {
+      return res.status(400).json({ success: false, error: Object.values(err.errors)[0].message });
+    }
+    return res.status(500).json({ success: false, error: 'Failed to create account: ' + err.message });
   }
 };
 
-// login
+// ---------- LOGIN (email only) ----------
 const login = async (req, res) => {
   try {
-    const { email, phone, password } = req.body;
+    const { email, password } = req.body;
 
+    if (!email || !email.trim()) {
+      return res.status(400).json({ success: false, error: 'Email is required' });
+    }
     if (!password) {
-      return res.status(400).json({
-        success: false,
-        error: 'Password is required'
-      });
+      return res.status(400).json({ success: false, error: 'Password is required' });
     }
 
-    const user = await auth.findOne({ email: email.trim() });
+    const user = await auth
+      .findOne({ email: email.trim().toLowerCase() })
+      .select('+password');   // password is select:false in schema
 
     if (!user) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid credentials'
-      });
+      return res.status(401).json({ success: false, error: 'Invalid credentials' });
+    }
+    if (!user.isActive) {
+      return res.status(403).json({ success: false, error: 'Account is deactivated' });
     }
 
     const isMatch = await bcryptjs.compare(password, user.password);
-    
     if (!isMatch) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid credentials'
-      });
+      return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
 
-    const token = jwt.sign(
-      { 
-        userId: user._id, 
-        email: user.email,
-        username: user.username,
-        phone: user.phone,
-        role: user.role,
-        name: user.name
-      }, 
-      'mypassword', 
-      { expiresIn: '30d' }
-    );
+    const token = signToken(user);
+    setTokenCookie(res, token);
 
-    res.cookie('token', token, {
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax'
-    });
-
-    res.json({
+    return res.json({
       success: true,
       data: token,
       user: {
         id: user._id,
         name: user.name,
-        email: user.email || 'Not provided',
-        username: user.username || 'Not provided',
-        phone: user.phone,
+        email: user.email,
+        username: user.username || '',
+        phone: user.phone || '',
         role: user.role,
         profile: user.profile
       },
-      message: `Welcome back, ${user.name}!`,
+      message: `Welcome back, ${user.name}!`
     });
-
   } catch (err) {
-    console.log(err);
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
+    console.log('Login error:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
+// ---------- GET PROFILE ----------
 const getProfile = async (req, res) => {
   try {
-    let token = req.header('Authorization') || req.headers.authorization;
-    
-    if (token) {
-      token = token.replace('Bearer ', '');
-    } else {
-      token = req.cookies?.token;
-    }
-    
-    if (!token) {
-      return res.status(401).json({
-        success: false,
-        error: 'No token provided'
-      });
-    }
-    
-    const decoded = jwt.verify(token, 'mypassword');
-    const user = await auth.findById(decoded.userId).select('-password');
-    
+    // authenticateToken has already verified + set req.user
+    const user = await auth.findById(req.user.userId);
+
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'User not found'
-      });
+      return res.status(404).json({ success: false, error: 'User not found' });
     }
-    
+
     let displayUsername = user.username;
     if (!displayUsername || displayUsername === 'null' || displayUsername === 'undefined') {
-      displayUsername = user.role === 'worker' ? user.phone : user.name;
+      displayUsername = user.name;
     }
-    
+
     return res.json({
       success: true,
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
-        username: displayUsername, 
-        phone: user.phone,
+        username: displayUsername,
+        phone: user.phone || '',
         role: user.role,
         profile: user.profile,
         isVerified: user.isVerified
       }
     });
-    
   } catch (err) {
-    console.log('Server error:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Server error'
-    });
+    console.log('getProfile error:', err);
+    return res.status(500).json({ success: false, error: 'Server error' });
   }
 };
 
+// ---------- LOGOUT ----------
 const logout = async (req, res) => {
   try {
     res.cookie('token', '', {
       maxAge: 0,
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax'
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
     });
-
-    res.status(200).json({
-      success: true,
-      message: "Logged out successfully"
-    });
-    
+    return res.status(200).json({ success: true, message: 'Logged out successfully' });
   } catch (err) {
-    console.log(err);
-    res.status(500).json({
-      success: false,
-      message: "Error during logout"
-    });
+    console.log('Logout error:', err);
+    return res.status(500).json({ success: false, message: 'Error during logout' });
   }
 };
 
+// ---------- DEBUG TOKEN (dev only) ----------
 const debugToken = async (req, res) => {
   try {
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(404).json({ success: false, error: 'Not found' });
+    }
+
     let token = req.header('Authorization') || req.headers.authorization;
-    
-    if (token) {
-      token = token.replace('Bearer ', '');
-    } else {
-      token = req.cookies?.token;
-    }
-    
-    if (!token) {
-      return res.json({
-        success: false,
-        error: 'No token provided'
-      });
-    }
-    
+    if (token) token = token.replace('Bearer ', '').trim();
+    else token = req.cookies?.token;
+
+    if (!token) return res.json({ success: false, error: 'No token provided' });
+
     token = token.trim().replace(/^["']|["']$/g, '');
-    
+
     const result = {
       success: true,
       tokenInfo: {
@@ -283,15 +246,14 @@ const debugToken = async (req, res) => {
         isJWTFormat: token.split('.').length === 3
       }
     };
-    
+
     const parts = token.split('.');
     if (parts.length === 3) {
       try {
         const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
         result.tokenInfo.decodedPayload = payload;
-        
         try {
-          const verified = jwt.verify(token, 'mypassword');
+          const verified = jwt.verify(token, JWT_SECRET);
           result.tokenInfo.verified = true;
           result.tokenInfo.userId = verified.userId;
         } catch (verifyError) {
@@ -302,19 +264,11 @@ const debugToken = async (req, res) => {
         result.tokenInfo.decodeError = decodeError.message;
       }
     }
-    
-    res.json(result);
-    
+
+    return res.json(result);
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 
-
-module.exports = {
-  signup,
-  login,
-  logout,
-  getProfile,
-  debugToken,
-};
+module.exports = { signup, login, logout, getProfile, debugToken };

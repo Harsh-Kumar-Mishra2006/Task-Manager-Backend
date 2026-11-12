@@ -30,6 +30,11 @@ router.get(
   getAllTasks
 );
 
+router.delete(
+  '/bulk/delete',
+  bulkDeleteTasks
+);
+
 router.get(
   '/:id',
   taskValidationRules.id,
@@ -51,11 +56,6 @@ router.delete(
   taskValidationRules.id,
   validate,
   deleteTask
-);
-
-router.delete(
-  '/bulk/delete',
-  bulkDeleteTasks
 );
 
 module.exports = router;

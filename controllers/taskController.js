@@ -1,51 +1,60 @@
-//controllers/taskController.js
+// controllers/taskController.js
 const Task = require('../models/Task');
+const mongoose = require('mongoose');
 
-const createTask = async (req, res, next) => {
+const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+// ── CREATE ─────────────────────────────────────────────
+const createTask = async (req, res) => {
   try {
-    console.log('Creating task with data:', req.body);
-    
-    const taskData = { ...req.body };
-    
+    // Sanity: authenticateToken should have set this
+    if (!req.user?.userId) {
+      return res.status(401).json({
+        status: 'error',
+        message: 'You must be logged in to create a task'
+      });
+    }
+
+    const taskData = { ...req.body, user: req.user.userId };
+
+    // Never let the client set another user's ID
+    delete taskData._id;
+    delete taskData.__v;
+
     if (!taskData.dueDate || taskData.dueDate === '') {
       taskData.dueDate = null;
     }
-    
-    if (taskData.tags && typeof taskData.tags === 'string') {
-      taskData.tags = taskData.tags.split(',').map(tag => tag.trim()).filter(Boolean);
+
+    if (typeof taskData.tags === 'string') {
+      taskData.tags = taskData.tags.split(',').map((t) => t.trim()).filter(Boolean);
     }
-    
+
     const task = await Task.create(taskData);
-    
-    console.log('Task created successfully:', task._id);
-    
-    res.status(201).json({
+
+    return res.status(201).json({
       status: 'success',
-      data: {
-        task
-      },
+      data: { task },
       message: 'Task created successfully'
     });
   } catch (error) {
     console.error('Error creating task:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error.message,
-      errors: error.errors || null
-    });
+
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map((e) => e.message);
+      return res.status(400).json({ status: 'error', message: 'Validation error', errors: messages });
+    }
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-
-const getAllTasks = async (req, res, next) => {
+// ── LIST (only this user's tasks) ──────────────────────
+const getAllTasks = async (req, res) => {
   try {
-    console.log('Fetching tasks with params:', req.query);
-    
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.min(parseInt(req.query.limit) || 10, 100);
     const skip = (page - 1) * limit;
-    
-    const filter = {};
+
+    const filter = { user: req.user.userId };
     if (req.query.status) filter.status = req.query.status;
     if (req.query.priority) filter.priority = req.query.priority;
     if (req.query.search) {
@@ -54,23 +63,19 @@ const getAllTasks = async (req, res, next) => {
         { description: { $regex: req.query.search, $options: 'i' } }
       ];
     }
-    
+
     const sortField = req.query.sortBy || 'createdAt';
     const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
     const sort = { [sortField]: sortOrder };
 
     const [tasks, total] = await Promise.all([
-      Task.find(filter)
-        .sort(sort)
-        .skip(skip)
-        .limit(limit)
-        .lean(),
+      Task.find(filter).sort(sort).skip(skip).limit(limit).lean(),
       Task.countDocuments(filter)
     ]);
 
     const totalPages = Math.ceil(total / limit);
 
-    res.status(200).json({
+    return res.status(200).json({
       status: 'success',
       data: {
         tasks,
@@ -87,287 +92,197 @@ const getAllTasks = async (req, res, next) => {
     });
   } catch (error) {
     console.error('Error fetching tasks:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error.message
-    });
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-const getTaskById = async (req, res, next) => {
+// ── GET ONE ────────────────────────────────────────────
+const getTaskById = async (req, res) => {
   try {
-    const task = await Task.findById(req.params.id);
-    
-    if (!task) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'Task not found'
-      });
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({ status: 'error', message: 'Invalid task ID format' });
     }
 
-    res.status(200).json({
+    const task = await Task.findOne({ _id: req.params.id, user: req.user.userId });
+    if (!task) {
+      return res.status(404).json({ status: 'error', message: 'Task not found' });
+    }
+
+    return res.status(200).json({
       status: 'success',
-      data: {
-        task
-      },
+      data: { task },
       message: 'Task retrieved successfully'
     });
   } catch (error) {
     console.error('Error fetching task:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error.message
-    });
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-const updateTask = async (req, res, next) => {
+// ── UPDATE ─────────────────────────────────────────────
+const updateTask = async (req, res) => {
   try {
-    console.log('Updating task:', req.params.id);
-    console.log('Update data:', req.body);
-    
-    if (!req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Invalid task ID format'
-      });
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({ status: 'error', message: 'Invalid task ID format' });
     }
 
-    const existingTask = await Task.findById(req.params.id);
-    if (!existingTask) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'Task not found'
-      });
+    const existing = await Task.findOne({ _id: req.params.id, user: req.user.userId });
+    if (!existing) {
+      return res.status(404).json({ status: 'error', message: 'Task not found' });
     }
 
     const updates = {};
-    const allowedUpdates = ['title', 'description', 'status', 'priority', 'dueDate', 'tags'];
-    
-    allowedUpdates.forEach(field => {
-      if (req.body[field] !== undefined && req.body[field] !== null) {
-        if (field === 'dueDate') {
-          if (req.body.dueDate === '') {
-            updates[field] = null;
-          } else {
-            const date = new Date(req.body.dueDate);
-            if (!isNaN(date.getTime())) {
-              updates[field] = date;
-            } else {
-              updates[field] = null;
-            }
-          }
-        } else if (field === 'tags') {
-          if (typeof req.body.tags === 'string') {
-            updates[field] = req.body.tags.split(',').map(tag => tag.trim()).filter(Boolean);
-          } else if (Array.isArray(req.body.tags)) {
-            updates[field] = req.body.tags;
-          } else {
-            updates[field] = [];
-          }
+    const allowed = ['title', 'description', 'status', 'priority', 'dueDate', 'tags'];
+
+    for (const field of allowed) {
+      if (req.body[field] === undefined || req.body[field] === null) continue;
+
+      if (field === 'dueDate') {
+        if (req.body.dueDate === '') {
+          updates.dueDate = null;
         } else {
-          updates[field] = req.body[field];
+          const d = new Date(req.body.dueDate);
+          updates.dueDate = isNaN(d.getTime()) ? null : d;
         }
+      } else if (field === 'tags') {
+        if (typeof req.body.tags === 'string') {
+          updates.tags = req.body.tags.split(',').map((t) => t.trim()).filter(Boolean);
+        } else if (Array.isArray(req.body.tags)) {
+          updates.tags = req.body.tags;
+        } else {
+          updates.tags = [];
+        }
+      } else {
+        updates[field] = req.body[field];
       }
-    });
+    }
 
     if (Object.keys(updates).length === 0) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'No valid fields to update'
-      });
+      return res.status(400).json({ status: 'error', message: 'No valid fields to update' });
     }
 
-    console.log('Applying updates:', updates);
+    const updatedTask = await Task.findByIdAndUpdate(req.params.id, updates, {
+      new: true,              // ← standard Mongoose option
+      runValidators: true
+      // context: 'query'  ← removed (invalid)
+    });
 
-    const updatedTask = await Task.findByIdAndUpdate(
-      req.params.id,
-      updates,
-      {
-        returnDocument: 'after', 
-        runValidators: true,
-        context: 'query'
-      }
-    );
-
-    if (!updatedTask) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'Task not found after update'
-      });
-    }
-
-    console.log('Task updated successfully:', updatedTask._id);
-
-    res.status(200).json({
+    return res.status(200).json({
       status: 'success',
-      data: {
-        task: updatedTask
-      },
+      data: { task: updatedTask },
       message: 'Task updated successfully'
     });
   } catch (error) {
     console.error('Error updating task:', error);
-    
+
     if (error.name === 'ValidationError') {
-      const messages = Object.values(error.errors).map(err => err.message);
-      return res.status(400).json({
-        status: 'error',
-        message: 'Validation error',
-        errors: messages
-      });
+      const messages = Object.values(error.errors).map((e) => e.message);
+      return res.status(400).json({ status: 'error', message: 'Validation error', errors: messages });
     }
-    
     if (error.code === 11000) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Duplicate field value entered'
-      });
+      return res.status(400).json({ status: 'error', message: 'Duplicate field value entered' });
     }
-    
-    res.status(500).json({
-      status: 'error',
-      message: error.message || 'Server error while updating task'
-    });
+    return res.status(500).json({ status: 'error', message: error.message || 'Server error' });
   }
 };
 
-const deleteTask = async (req, res, next) => {
+// ── DELETE ─────────────────────────────────────────────
+const deleteTask = async (req, res) => {
   try {
-    console.log('Deleting task:', req.params.id);
-
-    if (!req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Invalid task ID format'
-      });
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({ status: 'error', message: 'Invalid task ID format' });
     }
 
-    const deletedTask = await Task.findByIdAndDelete(req.params.id);
-    
-    if (!deletedTask) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'Task not found'
-      });
+    const deleted = await Task.findOneAndDelete({
+      _id: req.params.id,
+      user: req.user.userId
+    });
+
+    if (!deleted) {
+      return res.status(404).json({ status: 'error', message: 'Task not found' });
     }
 
-    console.log('Task deleted successfully:', req.params.id);
-
-    res.status(200).json({
+    return res.status(200).json({
       status: 'success',
-      data: {
-        deletedTask: {
-          id: deletedTask._id,
-          title: deletedTask.title
-        }
-      },
+      data: { deletedTask: { id: deleted._id, title: deleted.title } },
       message: 'Task deleted successfully'
     });
   } catch (error) {
     console.error('Error deleting task:', error);
-    
-    // Handle cast errors
     if (error.name === 'CastError') {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Invalid task ID format'
-      });
+      return res.status(400).json({ status: 'error', message: 'Invalid task ID format' });
     }
-    
-    res.status(500).json({
-      status: 'error',
-      message: error.message || 'Server error while deleting task'
-    });
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-const getTaskStats = async (req, res, next) => {
+// ── STATS (scoped to this user) ────────────────────────
+const getTaskStats = async (req, res) => {
   try {
-    const totalTasks = await Task.countDocuments();
-    const statusStats = await Task.aggregate([
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 }
-        }
-      }
-    ]);
-    
-    const priorityStats = await Task.aggregate([
-      {
-        $group: {
-          _id: '$priority',
-          count: { $sum: 1 }
-        }
-      }
+    const userId = new mongoose.Types.ObjectId(req.user.userId);
+
+    const [totalTasks, statusStats, priorityStats, recentTasks] = await Promise.all([
+      Task.countDocuments({ user: userId }),
+      Task.aggregate([
+        { $match: { user: userId } },
+        { $group: { _id: '$status', count: { $sum: 1 } } }
+      ]),
+      Task.aggregate([
+        { $match: { user: userId } },
+        { $group: { _id: '$priority', count: { $sum: 1 } } }
+      ]),
+      Task.find({ user: userId })
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .select('title status priority createdAt')
     ]);
 
-    const recentTasks = await Task.find()
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .select('title status priority createdAt');
-
-    res.status(200).json({
+    return res.status(200).json({
       status: 'success',
-      data: {
-        total: totalTasks,
-        byStatus: statusStats,
-        byPriority: priorityStats,
-        recent: recentTasks
-      },
+      data: { total: totalTasks, byStatus: statusStats, byPriority: priorityStats, recent: recentTasks },
       message: 'Task statistics retrieved successfully'
     });
   } catch (error) {
     console.error('Error fetching stats:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error.message
-    });
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-const bulkDeleteTasks = async (req, res, next) => {
+// ── BULK DELETE (only this user's tasks) ───────────────
+const bulkDeleteTasks = async (req, res) => {
   try {
-    console.log('Bulk deleting tasks:', req.body);
-    
     const { ids } = req.body;
-    
-    if (!ids || !Array.isArray(ids) || ids.length === 0) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Please provide an array of task IDs'
-      });
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ status: 'error', message: 'Please provide an array of task IDs' });
     }
 
-    const invalidIds = ids.filter(id => !id.match(/^[0-9a-fA-F]{24}$/));
-    if (invalidIds.length > 0) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Invalid task ID format in the provided list',
-        invalidIds: invalidIds
-      });
+    const invalid = ids.filter((id) => !isValidId(id));
+    if (invalid.length) {
+      return res.status(400).json({ status: 'error', message: 'Invalid task ID format', invalidIds: invalid });
     }
 
-    const result = await Task.deleteMany({ _id: { $in: ids } });
+    const result = await Task.deleteMany({
+      _id: { $in: ids },
+      user: req.user.userId            // ← only delete own tasks
+    });
 
-    console.log(`${result.deletedCount} tasks deleted successfully`);
-
-    res.status(200).json({
+    return res.status(200).json({
       status: 'success',
-      data: {
-        deletedCount: result.deletedCount,
-        requestedCount: ids.length
-      },
+      data: { deletedCount: result.deletedCount, requestedCount: ids.length },
       message: `${result.deletedCount} tasks deleted successfully`
     });
   } catch (error) {
     console.error('Error bulk deleting tasks:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error.message || 'Server error while deleting tasks'
-    });
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-module.exports= {createTask, getAllTasks, getTaskById, getTaskStats, bulkDeleteTasks, updateTask, deleteTask};
+module.exports = {
+  createTask,
+  getAllTasks,
+  getTaskById,
+  getTaskStats,
+  bulkDeleteTasks,
+  updateTask,
+  deleteTask
+};

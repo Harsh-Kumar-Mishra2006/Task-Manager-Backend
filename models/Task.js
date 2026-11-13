@@ -1,7 +1,14 @@
-//models/Task.js
+// models/Task.js
 const mongoose = require('mongoose');
 
 const taskSchema = new mongoose.Schema({
+  // ── NEW: owner ─────────────────────────────────────────
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Auth',
+    required: [true, 'Task must belong to a user'],
+    index: true
+  },
   title: {
     type: String,
     required: [true, 'Task title is required'],
@@ -35,9 +42,10 @@ const taskSchema = new mongoose.Schema({
     type: Date,
     default: null,
     validate: {
-      validator: function(value) {
+      validator(value) {
         if (value === null || value === undefined) return true;
-        return value > new Date();
+        // Only enforce future-date on new docs; editing an old task shouldn't fail
+        return this.isNew ? value > new Date() : true;
       },
       message: 'Due date must be in the future'
     }
@@ -46,8 +54,8 @@ const taskSchema = new mongoose.Schema({
     type: [String],
     default: [],
     validate: {
-      validator: function(tags) {
-        return tags.every(tag => tag.length <= 20);
+      validator(tags) {
+        return tags.every((tag) => tag.length <= 20);
       },
       message: 'Each tag must be 20 characters or less'
     }
@@ -56,38 +64,31 @@ const taskSchema = new mongoose.Schema({
   timestamps: true
 });
 
-taskSchema.index({ status: 1, priority: 1 });
-taskSchema.index({ createdAt: -1 });
+taskSchema.index({ user: 1, status: 1, priority: 1 });
+taskSchema.index({ user: 1, createdAt: -1 });
 
-taskSchema.pre('save', function() {
-  if (this.isModified('title')) {
+taskSchema.pre('save', function () {
+  if (this.isModified('title') && this.title) {
     this.title = this.title.charAt(0).toUpperCase() + this.title.slice(1);
   }
 });
 
-
-taskSchema.virtual('ageInDays').get(function() {
-  const diff = Date.now() - this.createdAt.getTime();
-  return Math.floor(diff / (1000 * 60 * 60 * 24));
+taskSchema.virtual('ageInDays').get(function () {
+  if (!this.createdAt) return 0;
+  return Math.floor((Date.now() - this.createdAt.getTime()) / 86400000);
 });
 
-taskSchema.methods.markAsCompleted = function() {
+taskSchema.methods.markAsCompleted = function () {
   this.status = 'completed';
   return this.save();
 };
 
-taskSchema.statics.getStats = async function() {
-  return this.aggregate([
-    {
-      $group: {
-        _id: '$status',
-        count: { $sum: 1 }
-      }
-    }
-  ]);
+taskSchema.statics.getStats = async function () {
+  return this.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]);
 };
 
 taskSchema.set('toJSON', {
+  virtuals: true,                    // ← so ageInDays shows up
   transform: (doc, ret) => {
     ret.id = ret._id;
     delete ret._id;
@@ -96,6 +97,4 @@ taskSchema.set('toJSON', {
   }
 });
 
-const Task = mongoose.model('Task', taskSchema);
-
-module.exports = Task;
+module.exports = mongoose.model('Task', taskSchema);

@@ -1,4 +1,4 @@
-//routes/taskRoutes.js
+// routes/taskRoutes.js
 const express = require('express');
 const router = express.Router();
 const {
@@ -10,52 +10,20 @@ const {
   getTaskStats,
   bulkDeleteTasks
 } = require('../controllers/taskController');
-const { validate, sanitize } = require('../middleware/validation');
-const { taskValidationRules } = require('../utils/validators');
+const authenticateToken = require('../middlewares/authMiddleware');
 
+// EVERY task endpoint requires a valid login
+router.use(authenticateToken);
+
+// Static routes MUST come before /:id
 router.get('/stats', getTaskStats);
+router.delete('/bulk/delete', bulkDeleteTasks);
 
-router.post(
-  '/',
-  taskValidationRules.create,
-  sanitize,
-  validate,
-  createTask
-);
+router.post('/', createTask);
+router.get('/', getAllTasks);
 
-router.get(
-  '/',
-  taskValidationRules.pagination,
-  validate,
-  getAllTasks
-);
-
-router.delete(
-  '/bulk/delete',
-  bulkDeleteTasks
-);
-
-router.get(
-  '/:id',
-  taskValidationRules.id,
-  validate,
-  getTaskById
-);
-
-router.put(
-  '/:id',
-  taskValidationRules.id,
-  taskValidationRules.update,
-  sanitize,
-  validate,
-  updateTask
-);
-
-router.delete(
-  '/:id',
-  taskValidationRules.id,
-  validate,
-  deleteTask
-);
+router.get('/:id', getTaskById);
+router.put('/:id', updateTask);
+router.delete('/:id', deleteTask);
 
 module.exports = router;

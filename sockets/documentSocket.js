@@ -4,8 +4,8 @@ const Document = require('../models/Document');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
-// Per-document pending writes (debounced persistence)
-const pendingSaves = new Map();      // docId -> { timer, content, version, lastEditor }
+// Per-document pending writes 
+const pendingSaves = new Map();     
 const SAVE_DEBOUNCE_MS = 2000;
 
 const flushDocument = async (docId) => {
@@ -26,7 +26,7 @@ const flushDocument = async (docId) => {
     console.log(`[socket] persisted doc ${docId} (v${pending.version}, ${pending.content.length} chars)`);
   } catch (err) {
     console.error(`[socket] persist failed for ${docId}:`, err.message);
-    // Re-queue so we don't lose writes
+ 
     if (!pendingSaves.has(docId)) pendingSaves.set(docId, pending);
   }
 };

@@ -181,7 +181,7 @@ const getProfile = async (req, res) => {
 
     return res.json({
       success: true,
-      data: {                                 // FIX: consistent envelope
+      user: {                                 // FIX: consistent envelope
         id: user._id,
         name: user.name,
         email: user.email,

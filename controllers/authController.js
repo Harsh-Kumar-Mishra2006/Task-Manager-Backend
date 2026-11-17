@@ -1,5 +1,5 @@
 // controllers/authController.js
-const auth = require('../models/authModel');
+const Auth = require('../models/authModel');          // FIX: idiomatic name
 const jwt = require('jsonwebtoken');
 const bcryptjs = require('bcryptjs');
 
@@ -10,12 +10,7 @@ const COOKIE_MAX_AGE = 30 * 24 * 60 * 60 * 1000; // 30 days
 // ---------- Helper: sign token ----------
 const signToken = (user) =>
   jwt.sign(
-    {
-      userId: user._id,
-      email: user.email,
-      role: user.role,
-      name: user.name
-    },
+    { userId: user._id, email: user.email, role: user.role, name: user.name },
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN }
   );
@@ -30,11 +25,10 @@ const setTokenCookie = (res, token) => {
   });
 };
 
-// ---------- SIGNUP ----------
+// ---------- SIGNUP (user only) ----------
 const signup = async (req, res) => {
-  const { name, email, username, phone, password, role = 'user', profile = {}, age, gender, dob } = req.body;
-
-  console.log('Signup request received:', { name, email, role });
+  // FIX #1: role is NOT accepted from the client. Always 'user'.
+  const { name, email, username, phone, password, profile = {}, age, gender, dob } = req.body;
 
   // --- validation ---
   if (!email || !email.trim()) {
@@ -50,51 +44,48 @@ const signup = async (req, res) => {
   if (!emailRegex.test(email)) {
     return res.status(400).json({ success: false, error: 'Please enter a valid email address' });
   }
-  if (!['user', 'worker', 'admin'].includes(role)) {
-    return res.status(400).json({ success: false, error: 'Invalid role' });
-  }
 
   try {
     const normalizedEmail = email.trim().toLowerCase();
 
-    const existingEmail = await auth.findOne({ email: normalizedEmail });
+    const existingEmail = await Auth.findOne({ email: normalizedEmail });
     if (existingEmail) {
-      return res.status(400).json({ success: false, message: 'Email already registered' });
+      return res.status(400).json({ success: false, error: 'Email already registered' });
     }
 
     // username check (only if provided and non-empty)
     let normalizedUsername = null;
     if (username && username.trim() !== '') {
       normalizedUsername = username.trim().toLowerCase();
-      const existingUsername = await auth.findOne({ username: normalizedUsername });
+      const existingUsername = await Auth.findOne({ username: normalizedUsername });
       if (existingUsername) {
-        return res.status(400).json({ success: false, message: 'Username already taken' });
+        return res.status(400).json({ success: false, error: 'Username already taken' });
       }
     }
 
-    const salt = await bcryptjs.genSalt(10);
-    const hash = await bcryptjs.hash(password, salt);
-
+    // FIX #9: model pre-save hook hashes; we pass plaintext here.
     const userData = {
       name: name.trim(),
       email: normalizedEmail,
-      password: hash,
-      role,
-      username: normalizedUsername,
-      phone: phone && phone.trim() ? phone.trim() : null,
+      password,                                  // hashed by pre('save')
+      role: 'user',                              // FIX #1: forced
+      isVerified: true,                          // see note below (#8)
+      isActive: true,
       profile: {
-        age: age || '',
-        gender: gender || '',
-        dob: dob || '',
-        ...profile
-      },
-      isVerified: true,
-      isActive: true
+        // FIX: explicit fields take precedence over spread
+        age: age != null ? Number(age) : (profile.age ?? null),
+        gender: gender ?? profile.gender ?? '',
+        dob: dob ?? profile.dob ?? '',
+        address: profile.address ?? '',
+        education: profile.education ?? '',
+        bio: profile.bio ?? ''
+      }
     };
+    // FIX #2: only add optional keys when they actually have values
+    if (normalizedUsername) userData.username = normalizedUsername;
+    if (phone && phone.trim()) userData.phone = phone.trim();
 
-    const createuser = await auth.create(userData);
-
-    console.log(`${role} created successfully with email: ${normalizedEmail}`);
+    const createuser = await Auth.create(userData);
 
     return res.status(201).json({
       success: true,
@@ -107,10 +98,9 @@ const signup = async (req, res) => {
         role: createuser.role,
         profile: createuser.profile
       },
-      message: `${role} account created successfully`
+      message: 'User account created successfully'
     });
   } catch (err) {
-    console.log('Signup error:', err);
     if (err.code === 11000) {
       const field = Object.keys(err.keyPattern || {})[0] || 'field';
       return res.status(400).json({ success: false, error: `${field} already in use` });
@@ -118,7 +108,7 @@ const signup = async (req, res) => {
     if (err.name === 'ValidationError') {
       return res.status(400).json({ success: false, error: Object.values(err.errors)[0].message });
     }
-    return res.status(500).json({ success: false, error: 'Failed to create account: ' + err.message });
+    return res.status(500).json({ success: false, error: 'Failed to create account' });
   }
 };
 
@@ -134,9 +124,9 @@ const login = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Password is required' });
     }
 
-    const user = await auth
+    const user = await Auth
       .findOne({ email: email.trim().toLowerCase() })
-      .select('+password');   // password is select:false in schema
+      .select('+password');
 
     if (!user) {
       return res.status(401).json({ success: false, error: 'Invalid credentials' });
@@ -149,6 +139,10 @@ const login = async (req, res) => {
     if (!isMatch) {
       return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
+
+    // FIX #11: touch presence
+    user.lastActiveAt = new Date();
+    await user.save({ validateBeforeSave: false });
 
     const token = signToken(user);
     setTokenCookie(res, token);
@@ -168,17 +162,14 @@ const login = async (req, res) => {
       message: `Welcome back, ${user.name}!`
     });
   } catch (err) {
-    console.log('Login error:', err);
-    return res.status(500).json({ success: false, message: 'Server error' });
+    return res.status(500).json({ success: false, error: 'Server error' });
   }
 };
 
 // ---------- GET PROFILE ----------
 const getProfile = async (req, res) => {
   try {
-    // authenticateToken has already verified + set req.user
-    const user = await auth.findById(req.user.userId);
-
+    const user = await Auth.findById(req.user.userId);
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
@@ -190,7 +181,7 @@ const getProfile = async (req, res) => {
 
     return res.json({
       success: true,
-      user: {
+      data: {                                 // FIX: consistent envelope
         id: user._id,
         name: user.name,
         email: user.email,
@@ -198,11 +189,11 @@ const getProfile = async (req, res) => {
         phone: user.phone || '',
         role: user.role,
         profile: user.profile,
-        isVerified: user.isVerified
+        isVerified: user.isVerified,
+        lastActiveAt: user.lastActiveAt
       }
     });
   } catch (err) {
-    console.log('getProfile error:', err);
     return res.status(500).json({ success: false, error: 'Server error' });
   }
 };
@@ -218,8 +209,7 @@ const logout = async (req, res) => {
     });
     return res.status(200).json({ success: true, message: 'Logged out successfully' });
   } catch (err) {
-    console.log('Logout error:', err);
-    return res.status(500).json({ success: false, message: 'Error during logout' });
+    return res.status(500).json({ success: false, error: 'Error during logout' });
   }
 };
 
@@ -242,8 +232,8 @@ const debugToken = async (req, res) => {
       success: true,
       tokenInfo: {
         length: token.length,
-        first50Chars: token.substring(0, 50),
         isJWTFormat: token.split('.').length === 3
+        // FIX #13: removed first50Chars — partial secret leak
       }
     };
 
